@@ -166,6 +166,14 @@ test key, use one of Stripe's test card numbers
   differing only in the text and image filename. Replaced with a single
   Jinja loop over a list built by `get_planets()`, so adding a planet is now
   one dict entry instead of a copy-pasted block.
+- **A LaTeX diagram error traced to `\\` inside a TikZ edge label.** While
+  generating the explainer PDFs, three `\draw ... node[...]{...}` lines in the
+  architecture diagram used a `\\` line break inside the edge-label text (e.g.
+  `{read/write via\\Flask-SQLAlchemy}`) and pdflatex failed with `Something's
+  wrong--perhaps a missing \item` on each one, with no clearer pointer to the
+  cause. The other edge labels in the same picture, which had no `\\`, compiled
+  fine, which is what narrowed it down. Fixed by dropping the manual line
+  break and using `align=center` on the node instead.
 
 ## What I learned
 
