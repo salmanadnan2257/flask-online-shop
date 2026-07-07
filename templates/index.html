@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+
+{% block content %}
+    <div class="page-container">
+        <div class="hero">
+            <h1>Planet Store <span aria-hidden="true">(with Pluto!)</span></h1>
+            <p>Purchase your very own planet, supplies unlimited.</p>
+            <p>Planets derived from infinite dimensions. No refunds.</p>
+        </div>
+
+        <h2 class="section-title">Planets for sale</h2>
+
+        <div class="product-grid">
+            {% for planet in planets %}
+                <article class="product-card">
+                    <img class="product-image" src="{{ url_for('static', filename='images/' + planet.image) }}" alt="{{ planet.name }}">
+                    <div class="product-body">
+                        <h3 class="product-name">{{ planet.name }}</h3>
+                        <div class="product-price">{{ planet.price_display }}</div>
+                        <p class="product-description">{{ planet.description }}</p>
+                        <form action="{{ url_for('create_checkout_session') }}" method="POST">
+                            <button name="name" value="{{ planet.slug }}" type="submit" class="btn btn-buy">Buy {{ planet.name }}</button>
+                        </form>
+                    </div>
+                </article>
+            {% endfor %}
+        </div>
+    </div>
+{% endblock %}

@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block title %}Create account - Planet Store{% endblock %}
+{% block content %}
+    <div class="auth-wrapper">
+        <div class="auth-card">
+            <h1>Create an account</h1>
+            <form action="{{ url_for('add_user') }}" method="POST" novalidate>
+                <label for="email">Email</label>
+                <input type="email" id="email" name="email" placeholder="you@example.com" required>
+
+                <label for="password">Password</label>
+                <input type="password" id="password" maxlength="10" name="password" placeholder="Up to 10 characters" required>
+
+                <label for="re-entered-pw">Re-enter password</label>
+                <input type="password" id="re-entered-pw" maxlength="10" name="re-entered-pw" placeholder="Repeat your password" required>
+
+                {% if error %}
+                    <p class="error">{{ error }}</p>
+                {% endif %}
+
+                <input type="submit" value="Create account" class="btn-auth">
+            </form>
+            <p class="auth-footer">
+                Already have an account?
+                <a href="{{ url_for('login') }}">Log in</a>
+            </p>
+        </div>
+    </div>
+{% endblock %}

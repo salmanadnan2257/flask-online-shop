@@ -1,0 +1,321 @@
+/* Planet Store - shared styles
+   A small design system on top of Bootstrap 5: CSS variables for color and
+   type, a reusable card component for products, and consistent form/alert
+   styling used across index, login, register, success, and cancel. */
+
+:root {
+    --color-bg: #131a2b;
+    --color-bg-elevated: #1c2740;
+    --color-surface: #f4f6f8;
+    --color-primary: #5b8def;
+    --color-primary-dark: #3f6fd1;
+    --color-accent: #f2b84b;
+    --color-text-light: #e7ecf3;
+    --color-text-muted: #a9b4c7;
+    --color-text-dark: #1b2436;
+    --color-danger: #e5626b;
+    --color-success: #4caf78;
+    --radius: 14px;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+ul {
+    list-style-type: none;
+}
+
+.bg_color {
+    background-color: var(--color-bg);
+    color: var(--color-text-light);
+    min-height: 100vh;
+}
+
+/* ---------- Nav ---------- */
+
+.site-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.25rem 6%;
+    background-color: var(--color-bg-elevated);
+    box-shadow: var(--shadow);
+}
+
+.site-nav .brand {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--color-text-light);
+    text-decoration: none;
+    letter-spacing: 0.5px;
+}
+
+.site-nav .brand:hover {
+    color: var(--color-accent);
+}
+
+.site-nav .brand .accent {
+    color: var(--color-accent);
+}
+
+/* ---------- Layout ---------- */
+
+.page-container {
+    padding: 3rem 6%;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.hero {
+    text-align: center;
+    margin-bottom: 2.5rem;
+}
+
+.hero h1 {
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+
+.hero p {
+    color: var(--color-text-muted);
+    margin-bottom: 0.25rem;
+}
+
+.section-title {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 2rem 0 1.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding-bottom: 0.75rem;
+}
+
+/* ---------- Flash / alert messages ---------- */
+
+.flash-messages {
+    max-width: 1200px;
+    margin: 1.5rem auto 0;
+    padding: 0 6%;
+}
+
+.alert-flash {
+    background-color: rgba(91, 141, 239, 0.15);
+    border: 1px solid var(--color-primary);
+    color: var(--color-text-light);
+    border-radius: var(--radius);
+    padding: 0.9rem 1.25rem;
+    margin-bottom: 0.75rem;
+}
+
+/* ---------- Product cards ---------- */
+
+.product-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.75rem;
+}
+
+.product-card {
+    background-color: var(--color-surface);
+    color: var(--color-text-dark);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.product-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+}
+
+.product-card .product-image {
+    width: 100%;
+    height: 190px;
+    object-fit: cover;
+    display: block;
+}
+
+.product-card .product-body {
+    padding: 1.25rem 1.25rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+}
+
+.product-card .product-name {
+    font-size: 1.2rem;
+    font-weight: 700;
+    margin-bottom: 0.25rem;
+}
+
+.product-card .product-price {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--color-primary-dark);
+    margin-bottom: 0.75rem;
+}
+
+.product-card .product-description {
+    color: #4a5468;
+    font-size: 0.92rem;
+    flex-grow: 1;
+    margin-bottom: 1rem;
+}
+
+.btn-buy {
+    background-color: var(--color-primary);
+    border: none;
+    color: #fff;
+    font-weight: 600;
+    padding: 0.55rem 1rem;
+    border-radius: 8px;
+    width: 100%;
+}
+
+.btn-buy:hover {
+    background-color: var(--color-primary-dark);
+    color: #fff;
+}
+
+/* ---------- Auth forms (login / register) ---------- */
+
+.auth-wrapper {
+    display: flex;
+    justify-content: center;
+    padding: 3rem 6%;
+}
+
+.auth-card {
+    background-color: var(--color-surface);
+    color: var(--color-text-dark);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 2.25rem 2rem;
+    width: 100%;
+    max-width: 420px;
+}
+
+.auth-card h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 1.5rem;
+    text-align: center;
+}
+
+.auth-card label {
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 0.3rem;
+    display: block;
+}
+
+.auth-card input[type="email"],
+.auth-card input[type="password"],
+.auth-card input[type="text"] {
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    margin-bottom: 1rem;
+    border: 1px solid #c9d1de;
+    border-radius: 8px;
+    font-size: 0.95rem;
+}
+
+.auth-card input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(91, 141, 239, 0.25);
+}
+
+.auth-card .btn-auth {
+    width: 100%;
+    background-color: var(--color-primary);
+    border: none;
+    color: #fff;
+    font-weight: 600;
+    padding: 0.65rem 1rem;
+    border-radius: 8px;
+    margin-top: 0.25rem;
+}
+
+.auth-card .btn-auth:hover {
+    background-color: var(--color-primary-dark);
+    color: #fff;
+}
+
+.auth-footer {
+    text-align: center;
+    margin-top: 1.25rem;
+    font-size: 0.9rem;
+    color: #4a5468;
+}
+
+.error {
+    color: var(--color-danger);
+    background-color: rgba(229, 98, 107, 0.1);
+    border: 1px solid var(--color-danger);
+    border-radius: 8px;
+    padding: 0.6rem 0.85rem;
+    font-size: 0.88rem;
+    margin: -0.25rem 0 1rem;
+}
+
+/* ---------- Result pages (success / cancel) ---------- */
+
+.result-wrapper {
+    display: flex;
+    justify-content: center;
+    padding: 4rem 6%;
+}
+
+.result-card {
+    background-color: var(--color-surface);
+    color: var(--color-text-dark);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 3rem 2.5rem;
+    max-width: 480px;
+    width: 100%;
+    text-align: center;
+}
+
+.result-icon {
+    font-size: 3rem;
+    line-height: 1;
+    margin-bottom: 1rem;
+}
+
+.result-icon.success {
+    color: var(--color-success);
+}
+
+.result-icon.cancel {
+    color: var(--color-danger);
+}
+
+.result-card h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 0.75rem;
+}
+
+.result-card p {
+    color: #4a5468;
+    margin-bottom: 1.5rem;
+}
+
+/* ---------- Footer ---------- */
+
+.site-footer {
+    text-align: center;
+    padding: 1.5rem 6%;
+    color: var(--color-text-muted);
+    font-size: 0.85rem;
+}

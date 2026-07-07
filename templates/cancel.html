@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block title %}Checkout cancelled - Planet Store{% endblock %}
+{% block content %}
+    <div class="result-wrapper">
+        <div class="result-card">
+            <div class="result-icon cancel" aria-hidden="true">&#10005;</div>
+            <h1>Something went wrong</h1>
+            <p>Your checkout was cancelled and you have not been charged. Head back and try again whenever you're ready.</p>
+            <a href="{{ url_for('home') }}" class="btn btn-primary">Try again</a>
+        </div>
+    </div>
+{% endblock %}

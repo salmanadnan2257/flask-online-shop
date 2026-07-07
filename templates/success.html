@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block title %}Payment successful - Planet Store{% endblock %}
+{% block content %}
+    <div class="result-wrapper">
+        <div class="result-card">
+            <div class="result-icon success" aria-hidden="true">&#10003;</div>
+            <h1>Payment successful</h1>
+            <p>We appreciate your business! Your planet is officially yours (in an infinite number of dimensions, anyway).</p>
+            <a href="{{ url_for('home') }}" class="btn btn-primary">Back to Planet Store</a>
+        </div>
+    </div>
+{% endblock %}
