@@ -1,0 +1,874 @@
+% explainer-source-hash: 97967a9d45db4c4a54a04f7b9e4d97567a9e23aa92e39f3cd61168e4e70269c7
+% explainer-source-commit: 0de7610f533d267cc97187ea2d75d1ee6ac1aab2
+% explainer-generated: 2026-07-16
+% Regenerate with /explain-all (see WIRING.md). Do not edit this stamp by hand:
+% it is how the toolchain knows whether this document still matches the code.
+\documentclass[11pt,a4paper]{article}
+\input{preamble}
+
+\title{\textbf{Flask Online Shop}\\[0.3em]\large A Deep Dive into a Flask + Stripe Storefront}
+\author{Portfolio explainer, written for a reader with no prior background}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{keyidea}{The one-paragraph version}
+\textbf{Flask Online Shop} is a small web store that sells planets as a joke. A visitor
+loads a page of nine product cards, can register an account, log in, and click
+\emph{Buy}, which hands them off to Stripe's own payment page. It is roughly 360 lines
+of Python in one file, five HTML templates, and one stylesheet. It exists to wire up the
+parts a real store needs (accounts, password hashing, a database, a payment provider)
+without a framework that hides how any of it works. It succeeds at that, and it also
+contains a login system that is broken in a way worth understanding precisely, because
+understanding exactly \emph{how} it is broken teaches more than the working parts do.
+\end{keyidea}
+
+\tableofcontents
+\newpage
+
+\section{Before anything else: the vocabulary}
+
+This section defines every term the rest of the document leans on. Skip it if these are
+already familiar.
+
+\begin{jargon}{Web application, server, client}
+When you open a web page, your browser (the \textbf{client}) sends a message across the
+network asking for a page. A program on another machine (the \textbf{server}) receives
+that message, decides what to say back, and sends a reply. A \textbf{web application} is
+that server-side program. This project is one.
+\end{jargon}
+
+\begin{jargon}{HTTP, request, response, GET, POST}
+\textbf{HTTP} is the language browsers and servers speak. The browser sends a
+\textbf{request}; the server sends back a \textbf{response}. Each request carries a
+\textbf{method} announcing intent. \code{GET} means "give me this page" and is what a
+browser does when you type an address. \code{POST} means "here is some data, do something
+with it" and is what a browser does when you submit a form. The distinction matters here:
+logging in is a \code{POST} because it submits a password.
+\end{jargon}
+
+\begin{jargon}{Status code, redirect}
+Every response carries a number. \code{200} means success. \code{302} and \code{303} mean
+\textbf{redirect}: "do not display anything, go ask for this other address instead." The
+browser follows it automatically. \code{500} means the server code crashed. This project
+uses redirects after login, after registration, and to hand the visitor to Stripe.
+\end{jargon}
+
+\begin{jargon}{Web framework, Flask}
+A \textbf{web framework} is a library that handles the tedious parts of being a server
+(parsing HTTP, matching addresses to code, building responses) so you write only your own
+logic. \textbf{Flask} is a deliberately small Python framework. It gives you routing and
+templates and little else, which is exactly why it was chosen here: nothing is hidden.
+\end{jargon}
+
+\begin{jargon}{Route, endpoint, view function}
+A \textbf{route} is a rule connecting a URL path to a Python function. In Flask you write
+\code{@app.route('/login')} above a function, and Flask calls that function whenever a
+request arrives for \code{/login}. The function is called a \textbf{view function}. This
+app has seven routes.
+\end{jargon}
+
+\begin{jargon}{Template, Jinja}
+A \textbf{template} is an HTML file with holes in it. \textbf{Jinja} is the engine that
+fills the holes with real values. \code{\{\{ planet.name \}\}} is a hole; Jinja replaces
+it with \code{Mercury}. \code{\{\% for ... \%\}} repeats a block of HTML once per item,
+which is how nine product cards come from one card written once.
+\end{jargon}
+
+\begin{jargon}{Database, SQL, SQLite, table, row, column}
+A \textbf{database} stores data so it survives the program shutting down. \textbf{SQL} is
+the language for querying it. \textbf{SQLite} is a database that is just a single file on
+disk, with no separate server to install, which is why small projects use it. Data lives
+in \textbf{tables}: a table is a grid, each \textbf{row} is one record (one user), each
+\textbf{column} is one field (the email).
+\end{jargon}
+
+\begin{jargon}{ORM, SQLAlchemy}
+An \textbf{ORM} (Object Relational Mapper) lets you treat database rows as ordinary Python
+objects instead of writing SQL by hand. \textbf{SQLAlchemy} is the standard Python ORM.
+Writing \code{User.query.filter\_by(email=email).first()} produces a \code{SELECT}
+statement behind the scenes and hands back a Python object.
+\end{jargon}
+
+\begin{jargon}{Hashing, bcrypt, salt}
+Storing passwords as plain text is indefensible: anyone who reads the database learns
+every password. A \textbf{hash} is a one-way scramble. You can compute the hash of a
+password, but you cannot reverse the hash back into the password. To check a login you
+hash what was typed and compare hashes. \textbf{bcrypt} is a hashing function designed to
+be deliberately \emph{slow}, so an attacker guessing billions of passwords is throttled. A
+\textbf{salt} is random data mixed in, so two users with the same password still get
+different hashes. bcrypt generates and embeds the salt for you.
+\end{jargon}
+
+\begin{jargon}{Session, cookie}
+HTTP has no memory: each request arrives knowing nothing about the last. A \textbf{cookie}
+is a small piece of data the server hands the browser, which the browser sends back on
+every later request. That is how a site remembers who you are. A \textbf{session} is the
+server-side notion of "this particular visitor, across their requests," normally carried
+by a cookie. \textbf{Remember this definition.} The central defect in this project is that
+it tracks login \emph{without} using the session at all.
+\end{jargon}
+
+\begin{jargon}{Environment variable}
+A value handed to a program by the operating system when it starts, rather than written
+into the source code. Secrets belong here, because source code gets committed to version
+control and shared, while environment variables do not.
+\end{jargon}
+
+\begin{jargon}{Stripe, Stripe Checkout}
+\textbf{Stripe} is a payment company. \textbf{Stripe Checkout} is its hosted payment page:
+instead of building a card form (and inheriting the legal and security burden of touching
+card numbers), the app asks Stripe to create a \textbf{Checkout Session}, then redirects
+the buyer to a page on Stripe's own domain. The card number never touches this
+application. That is the single best security decision in the project.
+\end{jargon}
+
+\newpage
+\section{Orientation: what the project physically is}
+
+\subsection{The files}
+
+Every tracked file, with its role:
+
+\begin{figure}[H]
+\centering
+\begin{forest} dirtree
+[flask-online-shop
+  [main.py \quad{\rmfamily\itshape the entire application: config, model, catalog, all 7 routes}]
+  [requirements.txt \quad{\rmfamily\itshape 5 pinned dependencies}]
+  [.env.example \quad{\rmfamily\itshape documents the 3 environment variables}]
+  [.gitignore \quad{\rmfamily\itshape excludes .env, instance/, *.sqlite3}]
+  [README.md]
+  [LICENSE \quad{\rmfamily\itshape PolyForm Strict: viewable, not reusable}]
+  [templates/ \quad{\rmfamily\itshape Jinja HTML}
+    [base.html \quad{\rmfamily\itshape shared shell: nav, flash messages, footer}]
+    [index.html \quad{\rmfamily\itshape the catalog, one card looped 9 times}]
+    [login.html]
+    [create\_user.html]
+    [success.html]
+    [cancel.html]
+  ]
+  [static/
+    [css/styles.css \quad{\rmfamily\itshape 321 lines, CSS variables + card components}]
+    [images/ \quad{\rmfamily\itshape mercury.jpeg ... pluto.jpeg, 9 files}]
+  ]
+  [docs/
+    [screenshots/app.png]
+    [explainers/ \quad{\rmfamily\itshape this document}]
+  ]
+]
+\end{forest}
+\caption{The complete repository. There is no test suite, no CI configuration, and no
+migration folder; every one of those absences is discussed later.}
+\end{figure}
+
+\begin{keyidea}{Everything is in one file, and that is a real decision}
+\file{main.py} holds the configuration, the database model, the product catalog, and all
+seven routes. For a project this size that is defensible and even helpful: a reader sees
+the whole system in one scroll. It is the first thing that would have to change if the
+project grew, and the natural split (config, models, routes, catalog data) is obvious.
+\end{keyidea}
+
+\subsection{The dependencies, and what each one is actually for}
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}llp{7.7cm}@{}}
+\toprule
+\textbf{Package} & \textbf{Pin} & \textbf{Why it is here} \\
+\midrule
+Flask & 3.0.3 & The web framework itself: routing, templates, requests, redirects. \\
+Flask-SQLAlchemy & 3.1.1 & Glue that wires SQLAlchemy into Flask's app lifecycle. \\
+SQLAlchemy & 2.0.30 & The ORM. Turns the \code{User} class into a SQLite table. \\
+stripe & 9.12.0 & Official Stripe SDK. Used for exactly one call, to create a Checkout Session. \\
+bcrypt & 4.1.3 & Password hashing and verification. \\
+\bottomrule
+\end{tabular}
+\caption{All five dependencies are pinned to exact versions, which is good practice: an
+unpinned install can silently pull a breaking release months later.}
+\end{table}
+
+\begin{honest}{The dependency list is missing something the README assumes}
+The README instructs the reader to \code{cp .env.example .env} and edit it. Nothing in
+this project ever reads a \file{.env} file. There is no \code{python-dotenv} in
+\file{requirements.txt} and no \code{load\_dotenv()} call anywhere in the source; I
+searched the whole tree for both and found neither. Flask does not read \file{.env} on its
+own (that is a feature of the \code{flask} CLI with \code{python-dotenv} installed, and
+this app is launched as \code{python main.py}). So a reader who follows the setup
+instructions exactly will create a \file{.env} file that is silently ignored, get the
+insecure fallback signing key and an empty Stripe key, and only discover it when checkout
+fails. The variables must instead be \code{export}ed into the shell. This is a genuine
+README-versus-code disagreement, and the code is the truth.
+\end{honest}
+
+\newpage
+\section{Architecture}
+
+\subsection{The whole system in one picture}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=1cm]
+  \node[box, minimum width=2.6cm] (browser) {Browser\\{\scriptsize the visitor}};
+  \node[box, right=3.2cm of browser, minimum width=3.6cm, minimum height=3.4cm] (flask)
+    {\textbf{Flask app}\\{\scriptsize main.py}\\[2pt]{\scriptsize 7 routes}\\{\scriptsize context processor}};
+  \node[store, right=3.2cm of flask] (db) {SQLite\\{\scriptsize instance/}\\{\scriptsize db.sqlite3}};
+  \node[extbox, above=1.6cm of db, minimum width=2.8cm] (stripe) {Stripe\\{\scriptsize hosted Checkout}};
+  \node[extbox, below=1.6cm of flask, minimum width=3.2cm] (tpl) {templates/ + static/\\{\scriptsize Jinja, CSS, 9 images}};
+
+  \draw[flow] ([yshift=6mm]browser.east) -- node[lbl, above]{HTTP request} ([yshift=6mm]flask.west);
+  \draw[flow] ([yshift=-6mm]flask.west) -- node[lbl, below]{HTML response} ([yshift=-6mm]browser.east);
+  \draw[flow] (flask.east) -- node[lbl, above, align=center]{ORM queries\\via Flask-SQLAlchemy} (db.west);
+  \draw[flow] (flask.north east) -- node[lbl, above left, align=center]{create\\Checkout Session} (stripe.west);
+  \draw[dflow] (browser.north) |- node[lbl, above, pos=0.75, align=center]{redirect 303: buyer enters card\\ON STRIPE'S DOMAIN, never here} (stripe.north west);
+  \draw[flow] (flask.south) -- node[lbl, right]{render} (tpl.north);
+\end{tikzpicture}}
+\caption{The system. Solid arrows are this application's own traffic; the dashed arrow is
+the buyer's browser leaving for Stripe. Card details flow only along the dashed path, so
+they never enter this codebase, this server, or this database.}
+\end{figure}
+
+\begin{keyidea}{Why the dashed arrow is the most important line in the diagram}
+Handling raw card numbers puts an application under the full weight of PCI DSS (the card
+industry's security standard) and makes any breach catastrophic. By redirecting to a page
+Stripe hosts, this project never sees a card number. A beginner project that built its own
+card form would be far more impressive-looking and far more dangerous. This is the right
+call, and it is worth being able to say why in an interview.
+\end{keyidea}
+
+\subsection{The seven routes}
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}p{3.5cm}lp{3.6cm}p{5.2cm}@{}}
+\toprule
+\textbf{Path} & \textbf{Methods} & \textbf{Function} & \textbf{What it does} \\
+\midrule
+\code{/} & GET & \code{home} & Renders the catalog from \code{get\_planets()}. \\
+\code{/create-checkout-\allowbreak session} & POST & \code{create\_checkout\_\allowbreak session} & Builds a Stripe session for one planet, redirects to Stripe. \\
+\code{/success} & GET & \code{success} & Static "payment worked" page. \\
+\code{/cancel} & GET & \code{cancel} & Static "cancelled" page. \\
+\code{/login} & GET, POST & \code{login} & Shows the form; checks the password. \\
+\code{/logout} & GET & \code{logout} & Clears a logged-in flag. \\
+\code{/add\_user} & GET, POST & \code{add\_user} & Shows the form; creates an account. \\
+\bottomrule
+\end{tabular}
+\caption{Note the inconsistent naming: \code{/create-checkout-session} uses hyphens while
+\code{/add\_user} uses an underscore. Cosmetic, but a reviewer will notice.}
+\end{table}
+
+\newpage
+\section{The catalog: how a product becomes a card}
+
+\subsection{Two dictionaries and the function that joins them}
+
+Product data lives in two Python dictionaries at the top of \file{main.py}:
+
+\begin{itemize}
+  \item \code{planet\_price\_dict} maps a slug (\code{'mercury'}) to a structure shaped
+  exactly like a \textbf{Stripe line item}: currency, product name, and
+  \code{unit\_amount}, which Stripe requires in \emph{cents}.
+  \item \code{PLANET\_INFO} maps the same slug to display copy: name, image filename, and
+  a description.
+\end{itemize}
+
+\code{get\_planets()} walks \code{PLANET\_ORDER} and joins the two into the list the
+template loops over.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=0.9cm]
+  \node[box, minimum width=3.3cm] (ppd) {\code{planet\_price\_dict}\\{\scriptsize slug $\rightarrow$ line item}\\{\scriptsize unit\_amount in CENTS}};
+  \node[box, below=1.6cm of ppd, minimum width=3.3cm] (pi) {\code{PLANET\_INFO}\\{\scriptsize slug $\rightarrow$ name,}\\{\scriptsize image, copy}};
+  \node[box, right=1.7cm of ppd, minimum width=2.7cm] (fp) {\code{format\_price()}\\{\scriptsize cents $\rightarrow$ "\$42,069"}};
+  \node[box, right=1.7cm of fp, minimum width=2.5cm, minimum height=2.0cm] (gp) {\code{get\_planets()}\\{\scriptsize joins both}};
+  \node[box, right=1.7cm of gp, minimum width=2.5cm] (tpl) {\file{index.html}\\{\scriptsize Jinja for-loop}};
+  \node[extbox, above=1.4cm of gp, minimum width=2.7cm] (stripe) {Stripe API\\{\scriptsize same number}};
+
+  \draw[flow] (ppd.east) -- node[lbl, above]{cents} (fp.west);
+  \draw[flow] (fp.east) -- node[lbl, above, align=center]{price\_\\display} (gp.west);
+  \draw[flow] (pi.east) -| node[lbl, below, pos=0.25, align=center]{name, image, description} (gp.south);
+  \draw[flow] (gp.east) -- node[lbl, above, align=center]{list of 9\\dicts} (tpl.west);
+  \draw[flow] (ppd.north) |- node[lbl, above, pos=0.65, align=center]{the SAME dict becomes the line item} (stripe.west);
+\end{tikzpicture}}
+\caption{One number, two destinations. The price shown on the card and the price charged
+by Stripe are derived from the same \code{unit\_amount}, so they cannot drift apart.}
+\end{figure}
+
+\begin{keyidea}{Why this indirection is not over-engineering}
+The README records that the template once hardcoded "Uranus: \$69,420" while the dict
+actually sent to Stripe said \code{4206900} cents, which is \$42,069. A customer would
+have seen one number and been charged another. That is a bug class, not a typo: the same
+fact was typed in two places. Deriving the display from the charge makes the bug
+unrepresentable. I verified the fix holds: the running app renders \$42,069 for Uranus,
+matching the Stripe amount exactly.
+\end{keyidea}
+
+\subsection{\code{format\_price()}, precisely}
+
+\begin{lstlisting}[language=Python, caption={The whole function. Cents in, display string out.}]
+def format_price(unit_amount_cents):
+    dollars = unit_amount_cents / 100
+    if dollars == int(dollars):
+        return f'${int(dollars):,}'
+    return f'${dollars:,.2f}'
+\end{lstlisting}
+
+The \code{:,} in the f-string inserts thousands separators. The branch drops trailing
+cents on whole-dollar amounts, so Mercury reads \$10,000 rather than \$10,000.00, while
+Earth keeps its cents at \$777,777.77. I ran \code{get\_planets()} directly and confirmed
+all nine outputs; they match the underlying cent amounts in every case.
+
+\begin{honest}{Pluto almost certainly cannot be bought}
+Pluto's \code{unit\_amount} is \code{999999999999999} cents, which the page renders as
+\$9,999,999,999,999.99. Stripe's documented maximum \code{unit\_amount} for USD is
+\code{99999999} cents (\$999,999.99). Pluto's amount exceeds that ceiling by roughly ten
+million times, so the Stripe API would be expected to reject the Checkout Session with an
+invalid-amount error, meaning the button on "the people's favorite" fails while the other
+eight work.
+
+\textbf{This is labelled inferred, not verified.} Confirming it requires a real Stripe
+test key, which this environment does not have, so I could not observe the actual API
+response. The claim rests on Stripe's published limit and on Pluto's amount, which I did
+read directly from the source. It is a joke value that was never exercised, and it is
+exactly the kind of thing an interviewer might click first. Earth (\$777,777.77) sits
+safely under the ceiling; only Pluto exceeds it.
+\end{honest}
+
+\subsection{The template loop}
+
+\begin{lstlisting}[language=HTML, caption={\file{index.html}: nine cards from one block of markup.}]
+{% for planet in planets %}
+    <article class="product-card">
+        <img class="product-image" src="{{ url_for('static', filename='images/' + planet.image) }}" alt="{{ planet.name }}">
+        <div class="product-body">
+            <h3 class="product-name">{{ planet.name }}</h3>
+            <div class="product-price">{{ planet.price_display }}</div>
+            <p class="product-description">{{ planet.description }}</p>
+            <form action="{{ url_for('create_checkout_session') }}" method="POST">
+                <button name="name" value="{{ planet.slug }}" type="submit" class="btn btn-buy">Buy {{ planet.name }}</button>
+            </form>
+        </div>
+    </article>
+{% endfor %}
+\end{lstlisting}
+
+The README records that this replaced nine copy-pasted card blocks. The mechanism of the
+Buy button is worth noting: the \code{<button>} carries \code{name="name"} and
+\code{value="\{\{ planet.slug \}\}"}, so submitting the form POSTs a single field called
+\code{name} whose value is the slug. That is what the checkout route reads.
+
+\newpage
+\section{The data model}
+
+\subsection{One table, four columns}
+
+\begin{lstlisting}[language=Python, caption={The entire persistence layer.}]
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(100))
+    password = db.Column(db.String(100))
+    logged_in = db.Column(db.Integer)
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+  \node[box, minimum width=11cm, minimum height=1cm] (t) {\textbf{user} \quad{\scriptsize (SQLite table, auto-created at startup)}};
+  \node[box, below=0.35cm of t.south west, anchor=north west, minimum width=2.4cm] (a) {\code{id}\\{\scriptsize INTEGER, PK}};
+  \node[box, right=0.2cm of a, minimum width=2.4cm] (b) {\code{email}\\{\scriptsize String(100)}};
+  \node[box, right=0.2cm of b, minimum width=2.9cm] (c) {\code{password}\\{\scriptsize String(100)}};
+  \node[box, right=0.2cm of c, minimum width=2.6cm] (d) {\code{logged\_in}\\{\scriptsize Integer, 0 or 1}};
+\end{tikzpicture}
+\caption{The complete schema. There are no other tables: no products (they are hardcoded
+in Python), no orders, no payments. Nothing about a purchase is ever recorded.}
+\end{figure}
+
+\begin{jargon}{Primary key}
+A column whose value uniquely identifies a row. \code{primary\_key=True} on \code{id} makes
+SQLite assign each new user an automatically increasing number.
+\end{jargon}
+
+\begin{honest}{The schema has four separate defects}
+\begin{enumerate}
+  \item \textbf{\code{password} is declared \code{String(100)} but stores bytes.}
+  \code{bcrypt.hashpw()} returns \code{bytes}, and that is what gets assigned. I queried
+  the live database with \code{typeof(password)} and SQLite reports \code{blob}, not
+  \code{text}. SQLite tolerates this because it is dynamically typed; a stricter database
+  such as PostgreSQL would reject or mangle it. The consequence is visible in the login
+  route, which carries an \code{isinstance(user.password, str)} guard to handle a value
+  that may come back as either type. That guard is a symptom of the wrong column type, not
+  a fix for it. The column should be \code{LargeBinary}, or the hash should be decoded to
+  a string before storage.
+  \item \textbf{\code{email} has no uniqueness constraint.} Nothing stops two rows sharing
+  an address. I registered \code{dup@x.com} twice against the running app and both
+  inserts succeeded, giving two rows with the same email. Since login does
+  \code{filter\_by(email=...).first()}, the second account is permanently unreachable: its
+  owner can never log in, because \code{first()} always returns row one. The fix is one
+  argument: \code{unique=True}.
+  \item \textbf{\code{logged\_in} is the wrong place for that fact entirely.} It is
+  discussed at length in the next section; it is the project's central defect.
+  \item \textbf{No length or format validation.} \code{String(100)} is not enforced by
+  SQLite, and nothing checks the email is an email.
+\end{enumerate}
+\end{honest}
+
+\subsection{Where the database file lives, and why that changed}
+
+\begin{lstlisting}[language=Python]
+base_path = os.path.dirname(os.path.abspath(__file__))
+instance_dir = os.path.join(base_path, 'instance')
+os.makedirs(instance_dir, exist_ok=True)
+path_to_sql_file = os.path.join(instance_dir, 'db.sqlite3')
+\end{lstlisting}
+
+The README records that this path was once built from \code{sys.argv[0]}, which resolves
+to whatever launched the process and therefore moved depending on how the app was started.
+Deriving it from \code{\_\_file\_\_} (the location of the source file itself) is stable
+regardless of the working directory. \code{db.create\_all()} then runs inside an
+\textbf{application context} at import time and creates the table if it is absent; it is
+idempotent, so calling it on every startup is safe.
+
+\begin{jargon}{Application context}
+Flask keeps certain globals (the current app, the database handle) in a context that must
+be explicitly active outside a request. \code{with app.app\_context():} is what makes
+\code{db.create\_all()} legal at module level.
+\end{jargon}
+
+\begin{honest}{\code{create\_all()} is not a migration system}
+It creates tables that do not exist. It will never alter one that does. Add
+\code{unique=True} to \code{email} tomorrow and existing databases keep the old schema
+silently, with no error and no upgrade. Real projects use a migration tool such as Alembic.
+For a demo this is an acceptable trade, but it is a limit worth naming out loud rather
+than being caught by.
+\end{honest}
+
+\newpage
+\section{Authentication, and the defect at the centre of it}
+
+\subsection{Registration: \code{/add\_user}}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.8cm]
+  \node[box, minimum width=3.1cm] (form) {POST \code{/add\_user}\\{\scriptsize email, password,}\\{\scriptsize re-entered-pw}};
+  \node[dec, right=1.9cm of form, text width=1.7cm] (match) {pw == re-pw?};
+  \node[box, right=1.9cm of match, minimum width=3.0cm] (salt) {\code{bcrypt.gensalt()}\\{\scriptsize random salt}};
+  \node[box, below=1.5cm of match, minimum width=3.4cm] (flash) {flash "passwords didn't match"\\{\scriptsize redirect back to form}};
+  \node[box, below=1.5cm of salt, minimum width=3.0cm] (hash) {\code{bcrypt.hashpw()}\\{\scriptsize slow by design}};
+  \node[store, below=1.4cm of hash] (db) {user row\\{\scriptsize insert}};
+  \node[box, left=2.4cm of db, minimum width=2.6cm] (home) {redirect \code{/}};
+
+  \draw[flow] (form) -- (match);
+  \draw[flow] (match) -- node[lbl, right]{no} (flash);
+  \draw[flow] (match) -- node[lbl, above]{yes} (salt);
+  \draw[flow] (salt) -- node[lbl, right]{salt} (hash);
+  \draw[flow] (hash) -- node[lbl, right, align=center]{hash bytes} (db);
+  \draw[flow] (db) -- (home);
+\end{tikzpicture}
+\caption{The registration flow. Note what is absent: no check that the email is already
+taken, no minimum password length, no email format validation, and no login afterwards.}
+\end{figure}
+
+\begin{keyidea}{The password is never stored, and that is the point}
+Only \code{bcrypt.hashpw(pw\_to\_bytes, bcrypt.gensalt())} reaches the database. If someone
+steals \file{db.sqlite3}, they get hashes. Because bcrypt is intentionally slow and each
+hash carries its own random salt, cracking them is expensive and cannot be done in bulk
+with a precomputed table. This part of the project is done correctly.
+\end{keyidea}
+
+\begin{honest}{Registration validation is thinner than it looks}
+The registration form declares \code{maxlength="10"} on both password fields. That is an
+HTML attribute, enforced only by the browser. I posted a 60-character password directly to
+\code{/add\_user}, bypassing the form: it was accepted, stored, and I then logged in with
+it successfully. The README lists this honestly under "What I'd do differently," and the
+observation is correct. Two related crashes I confirmed against the running app:
+
+\begin{itemize}
+  \item Posting \code{/add\_user} with the \code{password} field \textbf{missing entirely}
+  returns HTTP 500. \code{request.form.get('password')} returns \code{None} and
+  \code{bytes(None, 'UTF-8')} raises \code{TypeError}. A form always sends the field, so a
+  browser user never sees this, but any direct client triggers it.
+  \item There is no server-side email validation whatsoever; \code{type="email"} is,
+  again, browser-only.
+\end{itemize}
+A rule worth internalising: \textbf{every client-side validation is a suggestion.} The
+server is the only thing that can enforce anything.
+\end{honest}
+
+\subsection{Login: \code{/login}}
+
+\begin{lstlisting}[language=Python, caption={The heart of the login route.}]
+user = User.query.filter_by(email=email).first()
+if user:
+    encoded_pw = bytes(pw, 'UTF-8')
+    check = bcrypt.checkpw(encoded_pw, user.password.encode('UTF-8') if isinstance(user.password, str) else user.password)
+    if check:
+        flash('You are now Logged In')
+        user.logged_in = 1
+        db.session.commit()
+        return redirect(url_for('home'))
+    else:
+        error = 'That password is incorrect'
+        return render_template('login.html', error=error)
+else:
+    error = 'That email is not in our system'
+    return render_template('login.html', error=error)
+\end{lstlisting}
+
+The README describes a previous version that looked the submitted email up, then always
+compared against user id 1's hash regardless of who was logging in. With one user that
+works by coincidence; with two it lets the wrong password through or rejects the right
+one. The current code looks up the row \emph{by the submitted email} and checks against
+\emph{that row's own hash}, which is correct.
+
+I verified this behaves as claimed by driving the running server with two real accounts:
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Attempt} & \textbf{Expected} & \textbf{Observed} \\
+\midrule
+Alice logs in with Alice's password & accepted & accepted, redirect to \code{/} \\
+Bob logs in with Bob's password & accepted & accepted, redirect to \code{/} \\
+Bob logs in with Alice's password & rejected & "That password is incorrect" \\
+Unknown email & rejected & "That email is not in our system" \\
+\bottomrule
+\end{tabular}
+\caption{The per-user hash check is genuinely fixed. Verified against a live server.}
+\end{table}
+
+\begin{honest}{Two smaller issues in this route}
+\textbf{Username enumeration.} The route distinguishes "that email is not in our system"
+from "that password is incorrect." That tells an attacker which addresses have accounts,
+which is useful for targeting. Production systems return one generic message for both.
+For a joke storefront the stakes are nil, but the reasoning is worth knowing.
+
+\textbf{The \code{isinstance} guard.} The line is long and does two jobs at once. It exists
+purely because the column type is wrong (see the schema section). Fixing the column would
+delete the guard.
+
+\textbf{No rate limiting.} Nothing throttles login attempts. bcrypt's slowness is the only
+brake on guessing.
+\end{honest}
+
+\subsection{The central defect: login is a global flag, not a session}
+
+This is the most important thing in the codebase. Two functions carry it:
+
+\begin{lstlisting}[language=Python, caption={Six lines that decide who is logged in.}]
+def is_logged_in():
+    return bool(db.session.query(exists().where(User.logged_in == 1)).scalar())
+
+@app.context_processor
+def inject_nav_state():
+    return {'logged_in': is_logged_in()}
+\end{lstlisting}
+
+Read \code{is\_logged\_in()} carefully. It asks the database a single question: \textbf{does
+there exist any row, anywhere, whose \code{logged\_in} column equals 1?} It does not
+receive, and cannot receive, any information about \emph{who is asking}. There is no
+cookie read, no session lookup, no user identity involved at all.
+
+\begin{jargon}{Context processor}
+A Flask hook that injects variables into every template render automatically. Here it makes
+\code{logged\_in} available to \file{base.html} on every page, so the nav link is
+consistent site-wide. The mechanism is used correctly; the value it injects is the problem.
+\end{jargon}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=1cm]
+  \node[box, minimum width=2.7cm] (alice) {Alice\\{\scriptsize logs in properly}};
+  \node[box, below=0.7cm of alice, minimum width=2.7cm] (bob) {Bob\\{\scriptsize never logged in}};
+  \node[box, below=0.7cm of bob, minimum width=2.7cm] (stranger) {Total stranger\\{\scriptsize no cookies at all}};
+  \node[box, right=3.4cm of bob, minimum width=3.6cm, minimum height=2.6cm] (fn)
+    {\code{is\_logged\_in()}\\[3pt]{\scriptsize "does ANY row}\\{\scriptsize have logged\_in == 1?"}\\[3pt]{\scriptsize identity is never consulted}};
+  \node[store, right=2.8cm of fn] (db) {user table\\{\scriptsize Alice: 1}\\{\scriptsize Bob: 0}};
+  \node[box, below=1.5cm of db, minimum width=3.4cm] (out) {Every visitor sees\\\textbf{"Logout"}};
+
+  \draw[flow] (alice.east) -- node[lbl, above, pos=0.6]{GET /} (fn.west);
+  \draw[flow] (bob.east) -- (fn.west);
+  \draw[flow] (stranger.east) -- node[lbl, below, pos=0.6]{GET /} (fn.west);
+  \draw[flow] (fn.east) -- node[lbl, above]{SELECT EXISTS} (db.west);
+  \draw[flow] (db.south) -- node[lbl, right, align=center]{true} (out.north);
+\end{tikzpicture}}
+\caption{The defect, drawn. Three different visitors, one shared answer. Because the
+question never mentions who is asking, the answer cannot differ between them.}
+\end{figure}
+
+\begin{honest}{Verified experimentally: one user logging in logs everyone in}
+I ran the application and drove it with three independent HTTP clients, each with its own
+cookie jar. Results:
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Visitor} & \textbf{Before Alice logs in} & \textbf{After Alice logs in} \\
+\midrule
+Alice's client & shows "Login" & shows "Logout" \\
+Bob's client (never logged in) & shows "Login" & \textbf{shows "Logout"} \\
+Brand-new client, zero cookies & shows "Login" & \textbf{shows "Logout"} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A visitor who has never authenticated, holding no cookie, is presented as logged in the
+moment any other person in the world logs in. The README describes this as "no real
+session isolation between browser tabs or devices," which \textbf{understates it}. It is
+not a tab or device issue: it is that login state is a property of the \emph{application},
+not of a visitor. Tabs and devices are the symptom; the shared global flag is the disease.
+
+Two further consequences I confirmed:
+\begin{itemize}
+  \item \textbf{\code{/logout} logs out a stranger.} The route calls
+  \code{User.query.\allowbreak filter\_by(\allowbreak logged\_in=1)\allowbreak .first()}
+  and clears that row, so it logs out whichever matching row SQLite happens to return
+  first, which is not necessarily the person who clicked. With Alice and Bob both flagged, one anonymous request to \code{/logout} cleared
+  \emph{Alice's} row. \code{/logout} also requires no authentication of any kind.
+  \item \textbf{The flag never resets.} It lives in the database, so it survives restarts.
+  If the process dies while a user is flagged, the app comes back up believing someone is
+  logged in, forever, until someone hits \code{/logout}.
+\end{itemize}
+\end{honest}
+
+\begin{keyidea}{Why this happened, and the honest silver lining}
+Flask's \code{session} object is imported at the top of \file{main.py} and is used exactly
+once in the whole file, at \code{session.pop('\_flashes', None)}, to clear stale flash
+messages. The correct fix is to put the user's id in that session
+(\code{session['user\_id'] = user.id}), because the session is backed by a signed cookie
+and is therefore per-visitor by construction. The \code{logged\_in} column would then be
+deleted outright. The \code{flask-login} extension does this and more, which is what the
+README proposes.
+
+The silver lining is real: the surrounding architecture is right. The context processor is
+the correct mechanism for site-wide nav state, and it takes its value from a single
+function. Change those six lines to read the session and the defect disappears without
+touching a template. The bug is severe but it is also \emph{localised}, which is a
+consequence of the code being reasonably structured.
+\end{keyidea}
+
+\newpage
+\section{Payments}
+
+\subsection{The checkout route}
+
+\begin{lstlisting}[language=Python, caption={The entire payment integration.}]
+@app.route('/create-checkout-session', methods=['POST'])
+def create_checkout_session():
+    planet = request.form.get('name')
+    checkout_session = stripe.checkout.Session.create(
+        line_items=[planet_price_dict[planet]],
+        mode='payment',
+        success_url=f'{YOUR_DOMAIN}/success',
+        cancel_url=f'{YOUR_DOMAIN}/cancel',
+    )
+    return redirect(checkout_session.url, code=303)
+\end{lstlisting}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=0.9cm]
+  \node[box, minimum width=2.6cm, minimum height=1.2cm] (b) {Browser};
+  \node[box, right=3.4cm of b, minimum width=2.8cm, minimum height=1.2cm] (app) {Flask\\{\scriptsize checkout route}};
+  \node[extbox, right=3.4cm of app, minimum width=2.8cm, minimum height=1.2cm] (api) {Stripe API\\{\scriptsize server to server}};
+  \node[extbox, below=2.4cm of b, minimum width=3.2cm, minimum height=1.2cm] (pay) {Stripe hosted page\\{\scriptsize card entered HERE}};
+  \node[box, below=2.4cm of app, minimum width=2.8cm, minimum height=1.2cm] (succ) {\code{/success}\\{\scriptsize static page}};
+
+  \draw[flow] ([yshift=3mm]b.east) -- node[lbl, above, align=center]{POST\\name=earth} ([yshift=3mm]app.west);
+  \draw[flow] ([yshift=-3mm]app.west) -- node[lbl, below, align=center]{303 redirect\\to Stripe} ([yshift=-3mm]b.east);
+  \draw[flow] ([yshift=3mm]app.east) -- node[lbl, above, align=center]{Session.create\\line\_items} ([yshift=3mm]api.west);
+  \draw[flow] ([yshift=-3mm]api.west) -- node[lbl, below, align=center]{session.url} ([yshift=-3mm]app.east);
+  \draw[dflow] (b.south) -- node[lbl, left, align=center]{buyer goes to\\Stripe and pays} (pay.north);
+  \draw[dflow] (pay.east) -- node[lbl, above, align=center]{redirect back\\(browser controlled)} (succ.west);
+\end{tikzpicture}}
+\caption{The checkout handoff. The application talks to Stripe's API server-to-server to
+create the session, then sends the browser to Stripe's own page. Note the return path:
+\code{/success} is reached by a plain browser redirect.}
+\end{figure}
+
+\begin{jargon}{HTTP 303}
+\code{redirect(..., code=303)} is deliberate. 303 tells the browser "your POST is done,
+now GET this other page." Without it a browser refresh could resubmit the POST and start a
+second checkout. Using 303 after a form submission is a small, correct detail.
+\end{jargon}
+
+\subsection{Security posture of the payment flow}
+
+\begin{honest}{The payment flow is honest about cards and dishonest about outcomes}
+\textbf{What is right:} card data never touches this app (Stripe hosts the form); the
+secret key comes from the environment; the amount is server-controlled, so a buyer cannot
+tamper with the price by editing the form (the client sends only a slug, and the server
+looks the amount up).
+
+\textbf{What is wrong, verified against the running app:}
+\begin{enumerate}
+  \item \textbf{\code{/success} is a static page anyone can visit.} I requested
+  \code{/success} directly, having paid nothing: HTTP 200, "payment successful." Nothing
+  verifies a payment occurred. The route takes no session id and asks Stripe nothing.
+  \item \textbf{There is no webhook, so the app never learns about any payment.} A
+  \textbf{webhook} is a callback Stripe makes to your server, server-to-server, to confirm
+  a payment truly completed. Without one, this app's only signal is the buyer's browser
+  arriving at a URL, which the buyer fully controls. The README lists this correctly.
+  \item \textbf{Nothing is recorded anyway.} There is no orders table. Even a real payment
+  leaves no trace in this system, so "who bought what" is unanswerable. This is the deeper
+  reason the missing webhook is not a small gap: there is no place to put the answer.
+  \item \textbf{No login is required to buy.} The checkout route has no auth check at all.
+  I posted to it while completely logged out and it proceeded to the Stripe call. The
+  entire account system is therefore decorative with respect to purchasing.
+  \item \textbf{An unknown planet name crashes the route.} \code{planet\_price\_dict[planet]}
+  is an unguarded dict lookup. I posted \code{name=krypton} and got HTTP 500 from the
+  resulting \code{KeyError}. A missing \code{name} field does the same. It should return
+  400.
+\end{enumerate}
+\end{honest}
+
+\begin{keyidea}{The takeaway an interviewer would want}
+"Redirect to Stripe, then trust the redirect back" is the classic beginner payment
+mistake, and this project makes it. The fix is a webhook plus an orders table: Stripe tells
+your server directly that session \code{cs\_x} is paid, you record it, and \code{/success}
+displays only what your own database confirms. Being able to explain that in one breath is
+worth more than having built it.
+\end{keyidea}
+
+\newpage
+\section{Configuration and secrets}
+
+\begin{lstlisting}[language=Python]
+SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-only-insecure-secret-key')
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
+YOUR_DOMAIN = os.environ.get('YOUR_DOMAIN', 'http://127.0.0.1:5000')
+\end{lstlisting}
+
+The README records that a real Stripe test key and a Flask signing key were once hardcoded
+in the source. Both now come from the environment, \file{.env} is gitignored, and
+\file{.env.example} documents each variable without containing a real value. That is the
+correct pattern.
+
+\begin{jargon}{Why the signing key matters}
+Flask signs the session cookie with \code{SECRET\_KEY} so a visitor cannot forge one. If
+the key is publicly known, anyone can mint cookies the server will trust. Here the session
+carries only flash messages, so the blast radius is small today; the moment login moves
+into the session (the correct fix above), that key becomes the thing protecting every
+account.
+\end{jargon}
+
+\begin{honest}{Three loose ends in configuration}
+\begin{enumerate}
+  \item \textbf{The insecure fallback is a footgun.} \code{'dev-only-insecure-secret-key'}
+  means a deployment that forgets the variable does not crash; it runs with a publicly
+  known signing key. The comment says "only for a quick local run," which is honest, but
+  failing loudly in production is safer than defaulting quietly.
+  \item \textbf{\file{.env} is never loaded} (detailed earlier). The setup instructions do
+  not work as written.
+  \item \textbf{\code{app.config['SESSION\_TYPE'] = 'filesystem'} does nothing.} It is set
+  in the \code{\_\_main\_\_} block and is a \code{Flask-Session} setting. Flask-Session is
+  not in \file{requirements.txt} and is never imported, so plain Flask ignores the key
+  entirely. It is dead configuration, and a leftover of the same confusion that produced
+  the global login flag.
+\end{enumerate}
+\end{honest}
+
+\section{The front end, briefly}
+
+\file{base.html} is the shared shell: it loads Bootstrap 5 from a CDN, then
+\file{styles.css}, renders the nav (whose Login/Logout link is driven by the context
+processor), renders flashed messages, and defines the \code{content} block every other
+template fills. \file{styles.css} is 321 lines built on CSS variables
+(\code{--color-bg}, \code{--color-primary}, and so on) with reusable \code{product-card},
+\code{auth-card} and \code{result-card} components. It is tidy and consistent.
+
+\begin{jargon}{Flash message}
+Flask's mechanism for a one-shot notification that survives exactly one redirect: call
+\code{flash('...')}, and the next rendered page displays it once. It is stored in the
+session cookie, which is why \code{session.pop('\_flashes', None)} at the top of
+\code{/login} exists: it clears any stale message before showing the form.
+\end{jargon}
+
+\begin{honest}{Small front-end notes}
+\code{<script src="https://js.stripe.com/v3/"></script>} is loaded on every page but
+never used: the redirect approach needs no client-side Stripe library. Bootstrap's CSS is
+pinned to 5.0.2 while its JavaScript bundle is pinned to 5.3.0-alpha3, two different
+versions of the same library, and neither is actually needed by anything on the page. Both
+are dead weight rather than bugs.
+\end{honest}
+
+\section{Running it}
+
+\begin{lstlisting}[language=bash, caption={What actually works, as opposed to what the README says.}]
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# The README says to copy .env and edit it. Nothing reads .env.
+# Export the variables instead:
+export FLASK_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
+export STRIPE_SECRET_KEY=sk_test_your_key_here
+
+python main.py     # http://127.0.0.1:5000/
+\end{lstlisting}
+
+\subsection{What I verified myself}
+
+I installed the pinned dependencies in a clean virtual environment and drove the running
+server. Confirmed: it boots; \code{GET /} returns 200 and renders exactly nine product
+cards; all nine displayed prices match their Stripe cent amounts; registration, login,
+wrong-password, unknown-email and logout all behave as the README claims; the per-user
+hash fix is genuine. Also confirmed, and less flattering: one user logging in makes every
+visitor appear logged in; duplicate emails are accepted and orphan the second account; a
+60-character password bypasses the form's \code{maxlength}; \code{/success} serves 200 to
+someone who never paid; an unknown planet slug and a missing password field each return
+500; and checkout proceeds with no login.
+
+\subsection{What I could not verify}
+
+A real Stripe checkout end to end needs a test-mode secret key that this environment does
+not have. With no key, \code{POST /create-checkout-session} reaches Stripe and fails on
+authentication, which confirms the route is wired correctly up to that boundary and no
+further. The Pluto amount claim is likewise inferred from Stripe's documented limit rather
+than observed.
+
+\section{Honest overall assessment}
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}p{5.4cm}p{3.1cm}p{6.3cm}@{}}
+\toprule
+\textbf{Aspect} & \textbf{Verdict} & \textbf{Note} \\
+\midrule
+Password hashing & Correct & bcrypt, salted, never stores plain text. \\
+Card handling & Correct & Redirect to hosted Checkout; cards never touch this app. \\
+Server-side pricing & Correct & Client sends a slug, server owns the amount. \\
+Secrets in environment & Correct & Though the fallback key is a footgun and \file{.env} is never read. \\
+Price display integrity & Correct & Single source; verified across all nine planets. \\
+Template structure & Good & One shared base, one looped card. \\
+Session handling & \textbf{Broken} & Login is a global flag; every visitor shares one state. \\
+Payment confirmation & \textbf{Broken} & \code{/success} is unauthenticated and unverified; no webhook, no orders table. \\
+Input validation & Weak & Client-side only; several inputs return 500. \\
+Data model & Weak & No unique email, wrong column type for the hash. \\
+Tests & Absent & No test suite at all. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{keyidea}{What this project is, stated fairly}
+It is a competent beginner web application that gets the two genuinely dangerous things
+right (it does not store plain-text passwords and it does not touch card numbers) and then
+gets the state management wrong in a textbook way. The value it carries into an interview
+is not "I built a shop." It is: "I can show you a global mutable flag standing in for a
+session, explain precisely why it breaks the moment a second visitor arrives, prove it
+with three cookie jars, and tell you the six-line fix." That is a better story than a
+flawless CRUD app, provided the flaws are stated first and by the author. Every defect in
+this document is fixable in an afternoon, and the fact that they are localised is itself
+evidence the structure underneath is sound.
+\end{keyidea}
+
+\end{document}

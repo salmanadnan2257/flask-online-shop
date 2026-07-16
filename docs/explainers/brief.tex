@@ -1,0 +1,197 @@
+% explainer-source-hash: 97967a9d45db4c4a54a04f7b9e4d97567a9e23aa92e39f3cd61168e4e70269c7
+% explainer-source-commit: 0de7610f533d267cc97187ea2d75d1ee6ac1aab2
+% explainer-generated: 2026-07-16
+% Regenerate with /explain-all (see WIRING.md). Do not edit this stamp by hand:
+% it is how the toolchain knows whether this document still matches the code.
+\documentclass[11pt,a4paper]{article}
+\input{preamble}
+
+\title{\textbf{Flask Online Shop}\\[0.3em]\large The Brief}
+\author{A short, accurate tour of a Flask + Stripe storefront}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\section{What it is}
+
+A small web store that sells planets as a joke: nine product cards, accounts with hashed
+passwords, and a \emph{Buy} button that hands the visitor to Stripe's own payment page. It
+is about 360 lines of Python in a single file, five HTML templates, one stylesheet, and
+five pinned dependencies. Its purpose is to wire up the parts a real store needs without a
+framework that hides them.
+
+\begin{keyidea}{The honest summary, up front}
+The project gets the two genuinely dangerous things right: passwords are bcrypt-hashed and
+never stored in plain text, and card numbers never touch this application because Stripe
+hosts the payment form. It gets login state badly wrong: "logged in" is a flag on a
+database row rather than a property of a visitor's session, so \textbf{one person logging
+in makes every visitor appear logged in}. I verified this against the running app. The
+defect is severe, localised to six lines, and the most interesting thing here to be able to
+explain.
+\end{keyidea}
+
+\section{Architecture at a glance}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=1cm]
+  \node[box, minimum width=2.4cm] (browser) {Browser};
+  \node[box, right=3.0cm of browser, minimum width=3.4cm, minimum height=3.0cm] (flask)
+    {\textbf{Flask app}\\{\scriptsize main.py}\\[2pt]{\scriptsize 7 routes, 1 model}\\{\scriptsize catalog in Python}};
+  \node[store, right=3.0cm of flask] (db) {SQLite\\{\scriptsize one user table}};
+  \node[extbox, above=1.5cm of db, minimum width=2.8cm] (stripe) {Stripe\\{\scriptsize hosted Checkout}};
+  \node[extbox, below=1.4cm of flask, minimum width=3.2cm] (tpl) {Jinja templates\\{\scriptsize + Bootstrap, CSS}};
+
+  \draw[flow] ([yshift=5mm]browser.east) -- node[lbl, above]{request} ([yshift=5mm]flask.west);
+  \draw[flow] ([yshift=-5mm]flask.west) -- node[lbl, below]{HTML} ([yshift=-5mm]browser.east);
+  \draw[flow] (flask.east) -- node[lbl, above, align=center]{ORM} (db.west);
+  \draw[flow] (flask.north east) -- node[lbl, above left, align=center]{create session} (stripe.west);
+  \draw[dflow] (browser.north) |- node[lbl, above, pos=0.72, align=center]{buyer redirected; card entered on Stripe's domain} (stripe.north west);
+  \draw[flow] (flask.south) -- node[lbl, right]{render} (tpl.north);
+\end{tikzpicture}}
+\caption{Solid arrows are this app's traffic. The dashed arrow is the buyer leaving for
+Stripe, and it is why no card number ever enters this codebase.}
+\end{figure}
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}llp{7.4cm}@{}}
+\toprule
+\textbf{Piece} & \textbf{Tool} & \textbf{Role} \\
+\midrule
+Web framework & Flask 3.0.3 & Routing, templates, redirects. Small by design. \\
+Persistence & SQLAlchemy 2.0.30 & One \code{User} table in a SQLite file under \file{instance/}. \\
+Passwords & bcrypt 4.1.3 & Salted, deliberately slow hashing. \\
+Payments & stripe 9.12.0 & One API call: create a Checkout Session, redirect to it. \\
+Front end & Jinja + Bootstrap 5 & One \file{base.html} shell; nine cards from one looped block. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{How a purchase flows}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=0.85cm]
+  \node[box, minimum width=2.6cm, minimum height=1.2cm] (b) {Browser\\{\scriptsize clicks Buy}};
+  \node[box, right=3.2cm of b, minimum width=2.9cm, minimum height=1.2cm] (app) {Flask looks up\\the amount\\{\scriptsize server-side}};
+  \node[extbox, right=3.2cm of app, minimum width=2.5cm, minimum height=1.2cm] (api) {Stripe API};
+  \node[extbox, below=2.2cm of b, minimum width=3.0cm, minimum height=1.2cm] (pay) {Stripe hosted page\\{\scriptsize card entered here}};
+  \node[box, below=2.2cm of app, minimum width=2.9cm, minimum height=1.2cm] (succ) {\code{/success}\\{\scriptsize static, unverified}};
+
+  \draw[flow] ([yshift=3mm]b.east) -- node[lbl, above, align=center]{POST\\slug only} ([yshift=3mm]app.west);
+  \draw[flow] ([yshift=-3mm]app.west) -- node[lbl, below]{303} ([yshift=-3mm]b.east);
+  \draw[flow] (app.east) -- node[lbl, above, align=center]{line item} (api.west);
+  \draw[dflow] (b.south) -- node[lbl, left, align=center]{buyer pays} (pay.north);
+  \draw[dflow] (pay.east) -- node[lbl, above, align=center]{redirect back} (succ.west);
+\end{tikzpicture}}
+\caption{The client sends only a slug such as \code{earth}; the server owns the price, so a
+buyer cannot tamper with the amount. But the return path to \code{/success} is a plain
+browser redirect, which the buyer fully controls.}
+\end{figure}
+
+One detail worth keeping: the displayed price and the price charged both derive from a
+single \code{unit\_amount} in cents. The README records that a template once hardcoded
+"\$69,420" for Uranus while Stripe was told \$42,069. Deriving one from the other makes
+that bug unrepresentable, and I confirmed all nine prices now agree with their cent
+amounts.
+
+\section{The defect worth understanding}
+
+\begin{lstlisting}[language=Python, caption={The whole of the login-state logic.}]
+def is_logged_in():
+    return bool(db.session.query(exists().where(User.logged_in == 1)).scalar())
+\end{lstlisting}
+
+That query asks whether \emph{any} row in the whole table has \code{logged\_in == 1}. It
+never learns who is asking: no cookie is read, no session consulted, no identity involved.
+A context processor feeds its answer to the nav bar on every page.
+
+\begin{honest}{Verified: one login logs everybody in}
+I drove the running app with three independent HTTP clients, each with its own cookie jar.
+Before anyone logs in, all three see "Login." After Alice logs in, all three see "Logout,"
+including a brand-new client holding zero cookies that never authenticated.
+
+The README calls this "no real session isolation between browser tabs or devices," which
+understates it. Tabs and devices are the symptom. The disease is that login is a property
+of the \emph{application}, not of a visitor. Related, and also confirmed: \code{/logout}
+requires no authentication and clears whichever flagged row comes back first, so a stranger
+can log Alice out; and because the flag lives in the database it survives restarts.
+
+The fix is small: put the user id in Flask's \code{session} (a signed cookie, per-visitor
+by construction) and delete the \code{logged\_in} column. Flask's \code{session} is already
+imported and used once, only to clear stale flash messages. Because the surrounding
+structure is right, changing those few lines fixes every page without touching a template.
+\end{honest}
+
+\section{Security posture, stated plainly}
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}p{4.3cm}p{2.1cm}p{8.2cm}@{}}
+\toprule
+\textbf{Area} & \textbf{Verdict} & \textbf{Detail} \\
+\midrule
+Password storage & Correct & bcrypt with per-user salt; plain text never stored. \\
+Card data & Correct & Never touches this app; Stripe hosts the form. \\
+Price integrity & Correct & Client sends a slug; the server owns the amount. \\
+Secrets & Mostly correct & Read from the environment, \file{.env} gitignored. But the signing key falls back to a publicly known default instead of failing loudly. \\
+Session handling & \textbf{Broken} & Global flag, not a session. Verified above. \\
+Payment confirmation & \textbf{Broken} & \code{/success} returns 200 to someone who never paid. No webhook, and no orders table to record a payment in even if there were one. \\
+Auth on checkout & \textbf{Absent} & Buying requires no login at all; the account system is decorative with respect to purchasing. \\
+Input validation & Weak & Client-side only. A 60-character password bypasses the form's \code{maxlength="10"}; an unknown planet slug or a missing password field each return HTTP 500. \\
+Data model & Weak & \code{email} has no uniqueness constraint (duplicates orphan the second account); the password column is declared \code{String} but stores bytes, forcing an \code{isinstance} guard at login. \\
+Tests & Absent & No test suite. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{honest}{The setup instructions do not work as written}
+The README says to \code{cp .env.example .env} and edit it. Nothing in this project ever
+reads a \file{.env} file: there is no \code{python-dotenv} dependency and no
+\code{load\_dotenv()} call anywhere in the tree. A reader who follows the instructions gets
+the insecure fallback signing key and an empty Stripe key, and finds out only when checkout
+fails. The variables must be exported into the shell instead. Relatedly,
+\code{app.config['SESSION\_TYPE'] = 'filesystem'} is a Flask-Session setting, and
+Flask-Session is neither installed nor imported, so that line does nothing at all.
+\end{honest}
+
+\section{What was and was not verified}
+
+I installed the pinned dependencies into a clean virtual environment and drove the running
+server. \textbf{Confirmed working:} it boots; \code{GET /} returns 200 with exactly nine
+cards; all nine prices match their Stripe amounts; register, login, wrong password, unknown
+email and logout all behave as documented; and the per-user password check (which the
+README says was once hardcoded to compare against user 1) is genuinely fixed, tested with
+two accounts.
+
+\textbf{Confirmed broken:} everything in the posture table marked broken, weak or absent.
+
+\textbf{Not verified:} a real Stripe payment end to end, which needs a test-mode key this
+environment does not have. Without a key the checkout route reaches Stripe and fails only
+on authentication, which proves the wiring up to that boundary and no further.
+\textbf{Inferred, not observed:} Pluto's \code{unit\_amount} of \code{999999999999999}
+cents (rendered as \$9,999,999,999,999.99) exceeds Stripe's documented USD maximum of
+\code{99999999} cents, so its Buy button would be expected to fail while the other eight
+succeed. The amount is read from the source; the rejection is deduced from Stripe's
+published limit rather than seen.
+
+\section{Verdict}
+
+\begin{keyidea}{Where the value is}
+This is a competent beginner web app that is right about the two things that genuinely
+hurt when they are wrong (plain-text passwords, handling card numbers) and wrong about
+state management in a textbook way. Its worth in an interview is not "I built a shop." It
+is being able to point at a global mutable flag standing in for a session, explain exactly
+why it collapses the moment a second visitor arrives, demonstrate it with three cookie
+jars, and name the six-line fix; and to say that "redirect to Stripe, then trust the
+redirect back" is the classic payment mistake, whose real fix is a webhook plus an orders
+table. Flaws named first by the author read as engineering judgment. The same flaws found
+first by an interviewer do not.
+\end{keyidea}
+
+\end{document}
